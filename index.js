@@ -4,83 +4,55 @@ import axios from 'axios';
 const app = express();
 const port = process.env.PORT || 3000;
 
-// Endpoints
+// Verified Maddox API login endpoint
 const LOGIN_URL = "https://api.maddox.ai/auth/login";
-const LIST_CHARTS_URL = (clientKey) =>
-  `https://api.maddox.ai/monitor/${clientKey}/charts`;
-const getChartDataURL = (clientKey, chartType, chartId, timeframe, binSize) =>
-  `https://api.maddox.ai/monitor/${clientKey}/charts/${chartType}/${chartId}/data?timeframe=${timeframe}&binSize=${binSize}`;
+
+// Helper to construct chart data URL dynamically
+const getChartURL = (chartId, timeframe = '24h', binSize = 'hours') =>
+  `https://api.maddox.ai/monitor/rohstellen/charts/inspected_items/${chartId}/data?timeframe=${timeframe}&binSize=${binSize}`;
 
 /**
- * Route: GET /:clientKey/charts
- * Lists available charts for a client.
+ * Route: GET /inspections/:chartId
+ * Example: /inspections/109c440b-d2d6-4684-9845-f42b38e3ad78?timeframe=24h&binSize=hours
+ * Logs in, fetches chart data for given chartId, and returns JSON.
  */
-app.get('/:clientKey/charts', async (req, res) => {
-  const { clientKey } = req.params;
+app.get('/inspections/:chartId', async (req, res) => {
+  const { chartId } = req.params;
+  const { timeframe = '24h', binSize = 'hours' } = req.query;
+
   try {
-    // Authenticate
+    // 1) Authenticate
     const { data: loginData } = await axios.post(LOGIN_URL, {
-      email: process.env[`MADDOX_EMAIL_${clientKey.toUpperCase()}`],
-      password: process.env[`MADDOX_PASSWORD_${clientKey.toUpperCase()}`]
+      email: process.env.MADDOX_EMAIL,
+      password: process.env.MADDOX_PASSWORD
     });
     const token = loginData.accessToken;
-    const authHeaders = { headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' } };
 
-    // Fetch chart list from Maddox API
-    const chartsRes = await axios.get(LIST_CHARTS_URL(clientKey), authHeaders);
-    res.json(chartsRes.data);
+    // 2) Fetch chart data
+    const chartURL = getChartURL(chartId, timeframe, binSize);
+    const { data: chartData } = await axios.get(chartURL, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: 'application/json'
+      }
+    });
+
+    // 3) Respond with the chart data
+    res.json(chartData);
   } catch (err) {
     console.error(err.response?.data || err.message);
-    const status = err.response?.status || 500;
-    res.status(status).json({ error: 'Upstream API error listing charts', details: err.response?.data || err.message });
+    res.status(500).json({
+      error: 'Upstream API error',
+      details: err.response?.data || err.message
+    });
   }
 });
 
-/**
- * Route: GET /:clientKey/inspections
- * Fetches data for the 'inspected_items' chart (or other specified chartType).
- * Query params: timeframe, binSize, chartType
- */
-app.get('/:clientKey/inspections', async (req, res) => {
-  const { clientKey } = req.params;
-  const {
-    timeframe = '24h',
-    binSize = 'hours',
-    chartType = 'inspected_items'
-  } = req.query;
-
-  try {
-    // Authenticate
-    const { data: loginData } = await axios.post(LOGIN_URL, {
-      email: process.env[`MADDOX_EMAIL_${clientKey.toUpperCase()}`],
-      password: process.env[`MADDOX_PASSWORD_${clientKey.toUpperCase()}`]
-    });
-    const token = loginData.accessToken;
-    const authHeaders = { headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' } };
-
-    // List charts and find our chart ID
-    const chartsRes = await axios.get(LIST_CHARTS_URL(clientKey), authHeaders);
-    const chartsList = chartsRes.data;
-    const chartDef = chartsList.find(c => c.key === chartType || c.id === chartType || c.name === chartType);
-    if (!chartDef) {
-      return res.status(404).json({ error: `No chart found for type '${chartType}'` });
-    }
-    const chartId = chartDef.id;
-
-    // Fetch chart data
-    const dataUrl = getChartDataURL(clientKey, chartType, chartId, timeframe, binSize);
-    const dataRes = await axios.get(dataUrl, authHeaders);
-
-    res.json(dataRes.data);
-  } catch (err) {
-    console.error(err.response?.data || err.message);
-    const status = err.response?.status || 500;
-    res.status(status).json({ error: 'Upstream API error', details: err.response?.data || err.message });
-  }
+// Optional root health check
+app.get('/', (req, res) => {
+  res.send('🚀 Maddox Proxy is live. Use /inspections/:chartId');
 });
 
-// Root & health check
-app.get('/', (req, res) => res.send('🚀 Maddox Proxy live. Available routes: /:clientKey/charts and /:clientKey/inspections'));
-
-// Start server
-app.listen(port, () => console.log(`Server listening on port ${port}`));
+app.listen(port, () => {
+  console.log(`🚀 Server running on port ${port}`);
+});
