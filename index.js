@@ -49,16 +49,12 @@ app.get('/:clientKey/charts', async (req, res) => {
 
 /**
  * Route: GET /:clientKey/inspections/:chartId
- * Fetches data for the specified chart.
- * Query params: timeframe, binSize, chartType
+ * Dynamically discovers chartType from chartId and fetches its data.
+ * Query params: timeframe, binSize
  */
 app.get('/:clientKey/inspections/:chartId', async (req, res) => {
   const { clientKey, chartId } = req.params;
-  const {
-    timeframe = '24h',
-    binSize = 'hours',
-    chartType = 'inspected_items'
-  } = req.query;
+  const { timeframe = '24h', binSize = 'hours' } = req.query;
 
   const upper = clientKey.toUpperCase();
   const email = process.env[`MADDOX_EMAIL_${upper}`];
@@ -70,21 +66,27 @@ app.get('/:clientKey/inspections/:chartId', async (req, res) => {
   }
 
   try {
-    // Authenticate
+    // 1) Authenticate
     const { data: loginData } = await axios.post(LOGIN_URL, { email, password });
     const token = loginData.accessToken;
+    const headers = { headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' } };
 
-    // Fetch chart data
+    // 2) List charts to find the type for this chartId
+    const chartsRes = await axios.get(LIST_CHARTS_URL(workspace), { headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.maddox.v3+json' } });
+    const chartDef = chartsRes.data.find(c => c.id === chartId);
+    if (!chartDef) {
+      return res.status(404).json({ error: `Chart with id '${chartId}' not found` });
+    }
+    // Convert chartType to lowercase underscore form
+    const chartType = chartDef.chartType.toLowerCase();
+
+    // 3) Fetch chart data using discovered type
     const dataRes = await axios.get(
       getChartDataURL(workspace, chartType, chartId, timeframe, binSize),
-      {
-        headers: {
-          Authorization: `Bearer ${token}`,
-          Accept: 'application/json'
-        }
-      }
+      headers
     );
 
+    // 4) Return
     res.json(dataRes.data);
   } catch (err) {
     console.error(err.response?.data || err.message);
@@ -94,6 +96,6 @@ app.get('/:clientKey/inspections/:chartId', async (req, res) => {
 });
 
 // Health-check root
-app.get('/', (req, res) => res.send('🚀 Maddox Proxy live. Available routes: /:clientKey/charts and /:clientKey/inspections/:chartId'));
+app.get('/', (req, res) => res.send('🚀 Maddox Proxy live. Use /{clientKey}/charts and /{clientKey}/inspections/{chartId}'));
 
 app.listen(port, () => console.log(`🚀 Server listening on port ${port}`));
