@@ -4,75 +4,55 @@ import axios from 'axios';
 const app = express();
 const port = process.env.PORT || 3000;
 
-// Maddox API login endpoint
+// Endpoints
 const LOGIN_URL = "https://api.maddox.ai/auth/login";
+const LIST_CHARTS_URL = (clientKey) =>
+  `https://api.maddox.ai/monitor/${clientKey}/charts`;
+const getChartDataURL = (clientKey, chartType, chartId, timeframe, binSize) =>
+  `https://api.maddox.ai/monitor/${clientKey}/charts/${chartType}/${chartId}/data?timeframe=${timeframe}&binSize=${binSize}`;
 
-// Client credentials mapping — configure these env vars in Render
-const CLIENTS = {
-  endurance: {
-    email: process.env.MADDOX_EMAIL_ENDURANCE,
-    password: process.env.MADDOX_PASSWORD_ENDURANCE
-  },
-  acme: {
-    email: process.env.MADDOX_EMAIL_ACME,
-    password: process.env.MADDOX_PASSWORD_ACME
-  }
-  // Add more clients here as needed
-};
-
-// Construct the chart data URL dynamically
-const getChartURL = (chartId, timeframe = '24h', binSize = 'hours') =>
-  `https://api.maddox.ai/monitor/rohstellen/charts/inspected_items/${chartId}/data?timeframe=${timeframe}&binSize=${binSize}`;
-
-/**
- * Route: GET /:clientKey/inspections/:chartId
- * Example: /endurance/inspections/109c440b-d2d6-4684-9845-f42b38e3ad78?timeframe=24h&binSize=hours
- * Logs in as the specified client, fetches chart data, and returns JSON.
- */
-app.get('/:clientKey/inspections/:chartId', async (req, res) => {
-  const { clientKey, chartId } = req.params;
-  const { timeframe = '24h', binSize = 'hours' } = req.query;
-
-  // Validate client
-  const creds = CLIENTS[clientKey];
-  if (!creds || !creds.email || !creds.password) {
-    return res.status(400).json({ error: 'Unknown client key or missing credentials' });
-  }
+app.get('/:clientKey/inspections', async (req, res) => {
+  const { clientKey } = req.params;
+  const {
+    timeframe = '24h',
+    binSize = 'hours',
+    chartType = 'inspected_items'
+  } = req.query;
 
   try {
-    // Authenticate
-    const { data: loginData } = await axios.post(LOGIN_URL, {
-      email: creds.email,
-      password: creds.password
+    // 1) Login and get JWT
+    const loginRes = await axios.post(LOGIN_URL, {
+      email: process.env[`MADDOX_EMAIL_${clientKey.toUpperCase()}`],
+      password: process.env[`MADDOX_PASSWORD_${clientKey.toUpperCase()}`]
     });
-    const token = loginData.accessToken;
+    const token = loginRes.data.accessToken;
+    const authHeaders = { headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' } };
 
-    // Fetch chart data
-    const chartURL = getChartURL(chartId, timeframe, binSize);
-    const { data: chartData } = await axios.get(chartURL, {
-      headers: {
-        Authorization: `Bearer ${token}`,
-        Accept: 'application/json'
-      }
-    });
+    // 2) List available charts for this client
+    const chartsRes = await axios.get(LIST_CHARTS_URL(clientKey), authHeaders);
+    const chartsList = chartsRes.data;
 
-    // Return the chart data
-    res.json(chartData);
+    // 3) Find the chart matching our requested type
+    const chartDef = chartsList.find(c => c.key === chartType || c.id === chartType || c.name === chartType);
+    if (!chartDef) {
+      return res.status(404).json({ error: `No chart found for type '${chartType}'` });
+    }
+    const chartId = chartDef.id;
 
+    // 4) Fetch the chart data using the discovered ID
+    const dataUrl = getChartDataURL(clientKey, chartType, chartId, timeframe, binSize);
+    const dataRes = await axios.get(dataUrl, authHeaders);
+
+    // 5) Return the data
+    res.json(dataRes.data);
   } catch (err) {
     console.error(err.response?.data || err.message);
-    res.status(err.response?.status || 500).json({
-      error: 'Upstream API error',
-      details: err.response?.data || err.message
-    });
+    const status = err.response?.status || 500;
+    res.status(status).json({ error: 'Upstream API error', details: err.response?.data || err.message });
   }
 });
 
-// Root health-check
-app.get('/', (req, res) => {
-  res.send('🚀 Maddox Proxy is live. Use /{clientKey}/inspections/{chartId}');
-});
+// Root & health check
+app.get('/', (req, res) => res.send('🚀 Maddox Proxy live. Use /{clientKey}/inspections')); 
 
-app.listen(port, () => {
-  console.log(`🚀 Server running on port ${port}`);
-});
+app.listen(port, () => console.log(`Server listening on port ${port}`));
